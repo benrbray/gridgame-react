@@ -1,11 +1,6 @@
-import * as React from "react";
-import * as ReactDOM from "react-dom";
+import * as React from 'react';
+import * as ReactDOM from 'react-dom';
 
-function Welcome() {
-	return <h1>Hello, World!</h1>;
-}
+import { init, GridGame } from '~/GridGame';
 
-ReactDOM.render(
-	<Welcome />,
-	document.getElementById("root")
-);
+init();
