@@ -142,28 +142,100 @@ let gridStyle = /*css*/`
 		background-color: inherit;
 	}
 
-	.cell input.void {
+	.cell.void {
 		background-color: black;
 		border: none;
 	}
-	.cell input.disabled {
+	.cell.disabled input {
 		background-color: gray;
 	}
-	.cell input.highlight:not([disabled]) {
+	.cell.highlight input:not([disabled]) {
 		background-color: lightblue;
 	}
-	.cell input:focus, .cell input.highlight:focus {
+	.cell input:focus, .cell.highlight input:focus {
 		background-color: #8cbaca;
 	}`;
 // </style> ----------------------------------------------------------
 
+interface BoardData {
+	board: (string | null)[][];
+	numRows: number;
+	numCols: number;
+};
+
 //// WEB COMPONENT ///////////////////////////////////////////////////
 
 export class GridGameElement extends HTMLElement {
+
+	rootElt: HTMLElement | null;
+
 	constructor() {
 		super();
 		console.log("gridgame :: constructor");
 
+		this.rootElt = null;
+
+		// workaround for react event issues inside shadow dom
+		//retargetEvents(shadowRoot);
+	}
+
+	// Dimensions ----------------------------------------------------
+
+	get numRows() { return Number(this.getAttribute("rows")) || 4; }
+	get numCols() { return Number(this.getAttribute("cols")) || 4; }
+	set numRows(count: number) {
+		if (count == this.numRows) { return; }
+		this.setAttribute("rows", String(Math.max(count | 0, 0)));
+		this.resetBoard();
+	}
+	set numCols(count: number) {
+		if (count == this.numCols) { return; }
+		this.setAttribute("cols", String(Math.max(count | 0, 0)));
+		this.resetBoard();
+	}
+
+	// Disabled / Enabled State --------------------------------------
+
+	get disabled() {
+		return this.hasAttribute("disabled");
+	}
+
+	set disabled(val) {
+		if (val) { this.setAttribute("disabled", ""); }
+		else { this.removeAttribute("disabled"); }
+	}
+
+	// Render --------------------------------------------------------
+
+	resetBoard(board?: BoardData) {
+		console.log("gridGameElement :: resetBoard");
+		let component = (<GridGame
+			numRows={board?.numRows || 4}
+			numCols={board?.numCols || 4}
+			board={board?.board || undefined}
+		/>);
+
+		ReactDOM.render(component, this.rootElt);
+	}
+
+
+	// Callbacks -----------------------------------------------------
+
+	connectedCallback() {
+		console.log("gridGameElement :: connectedCallback");
+
+		// ISSUE: TextContent may not always exist at the point in time
+		// when `connectedCallback()` is called.  See for example:
+		//    > https://github.com/WebReflection/html-parsed-element
+		//    > https://stackoverflow.com/questions/48498581/textcontent-empty-in-connectedcallback-of-a-custom-htmlelement
+		let boardData: (BoardData | null) = null;
+		if (this.textContent) {
+			boardData = GridGameElement.boardFromString(this.textContent);
+			this.textContent = "";
+			console.log(boardData);
+		}
+
+		// render component
 		// build template
 		let template = document.createElement("div");
 
@@ -173,19 +245,46 @@ export class GridGameElement extends HTMLElement {
 		template.appendChild(styleElt);
 
 		// react root
-		let rootElt = document.createElement("div");
-		template.appendChild(rootElt);
+		this.rootElt = document.createElement("div");
+		template.appendChild(this.rootElt);
 
 		// attach template as shadow dom
 		//let shadowRoot = this.attachShadow({mode: "open" });
 		this.appendChild(template);
-		ReactDOM.render(
-			<GridGame numRows={4} numCols={4} />,
-			rootElt
-		);
 
-		// workaround for react event issues inside shadow dom
-		//retargetEvents(shadowRoot);
+		// render board
+		this.resetBoard(boardData || undefined);
+	}
+
+	// GridGame API --------------------------------------------------
+
+	static boardFromString(content: string): (BoardData | null) {
+		// fail gracefully if content invalid
+		content = content.trim();
+		if (!content) { return null; }
+
+		// parse input and validate dimensions
+		let lines = content.split(/\s+/);
+		let numRows = lines.length;
+		let numCols = lines[0].length;
+		let board = [];
+
+		for (let r = 0; r < numRows; r++) {
+			let line: (string | null)[] = lines[r].split("");
+			// first row determines numCols
+			if (line.length != numCols) {
+				throw new Error("invalid board string");
+			}
+			// handle blank / disabled cells
+			for (let c = 0; c < numCols; c++) {
+				if (line[c] == "_") { line[c] = ""; }
+				else if (line[c] == "@") { line[c] = null; }
+			}
+
+			board.push(line);
+		}
+
+		return { numRows, numCols, board };
 	}
 }
 
@@ -196,12 +295,13 @@ export class GridGameElement extends HTMLElement {
 interface IGridGameProps {
 	numRows: number;
 	numCols: number;
+	board?: (string | null)[][];
 }
 
 interface IGridGameState {
 	numRows: number;
 	numCols: number;
-	board: string[][];
+	board: (string | null)[][];
 	disabled: boolean;
 	focusCoords: { row: number, col: number; } | null;
 }
@@ -213,6 +313,11 @@ interface GridCoord {
 
 export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 
+	static defaultProps: IGridGameProps = {
+		numRows: 4,
+		numCols: 4
+	};
+
 	/* ---- Constructor ---- */
 	constructor(props: IGridGameProps) {
 		super(props);
@@ -223,13 +328,18 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		this.handleKeyDown = this.handleKeyDown.bind(this);
 		this.handleFocus = this.handleFocus.bind(this);
 
+		// default to empty board
+		let board = props.board || range(props.numRows).map((k, v) =>
+			range(props.numCols).map((k, v) => "")
+		);
+
+		console.log(props, board);
+
 		// set state
 		this.state = {
 			numRows: props.numRows,
 			numCols: props.numCols,
-			board: range(props.numRows).map((k, v) =>
-				range(props.numCols).map((k, v) => "")
-			),
+			board: board,
 			disabled: false,
 			focusCoords: null
 		};
@@ -261,7 +371,20 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 
 	/* ---- Coordinate Computations ---- */
 
-	coordNext(row: number, col: number): GridCoord {
+	coordUp = (coord: GridCoord) => this.coordAddWrap(coord, -1, 0);
+	coordDown = (coord: GridCoord) => this.coordAddWrap(coord, +1, 0);
+	coordLeft = (coord: GridCoord) => this.coordAddWrap(coord, 0, -1);
+	coordRight = (coord: GridCoord) => this.coordAddWrap(coord, 0, +1);
+
+	coordAddWrap(coord: GridCoord, dx: number, dy: number): GridCoord {
+		return {
+			row: mod(coord.row + dx, this.state.numRows),
+			col: mod(coord.col + dy, this.state.numCols)
+		};
+	}
+
+	coordNext(coord: GridCoord): GridCoord {
+		let { row, col } = coord;
 		if (col + 1 >= this.state.numCols) {
 			return { row: mod(row + 1, this.state.numRows), col: mod(col + 1, this.state.numCols) };
 		} else {
@@ -269,7 +392,8 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		}
 	}
 
-	coordPrev(row: number, col: number): GridCoord {
+	coordPrev(coord: GridCoord): GridCoord {
+		let { row, col } = coord;
 		if (col - 1 < 0) {
 			return { row: mod(row - 1, this.state.numRows), col: mod(col - 1, this.state.numCols) };
 		} else {
@@ -277,36 +401,51 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		}
 	}
 
+	/* COORDACTION
+	 * Repeatedly apply `action` until a non-disabled grid cell is found.
+	 * To avoid infinite loops, will only retry (numRows*numCols) times.
+	 * @param (start) The starting cell.
+	 * @param (action) Any function mapping GridCoord --> GridCoord.
+	 */
+	coordAction(start: GridCoord, action: (c: GridCoord) => GridCoord): (GridCoord | null) {
+		let { row, col } = start;
+		let coord: GridCoord = action.call(this, { row, col });
+		let iter = 0, maxIter = (this.state.numRows * this.state.numCols);
+
+		let disabled = true;
+		while ((iter++) < maxIter) {
+			disabled = (this.state.board[coord.row][coord.col] == null);
+
+			// stop at first enabled cell, or on reaching start again
+			if (!disabled) { break; }
+			if (coord.row == row && coord.col == col) { break; }
+			// repeatedly apply action until non-void cell is found
+			coord = action.call(this, coord);
+		}
+
+		return (disabled ? null : coord);
+	}
+
 	/* ---- Focus Management ---- */
 
-	focusUp = () => this.focusRelativeWrap(-1, 0);
-	focusDown = () => this.focusRelativeWrap(+1, 0);
-	focusLeft = () => this.focusRelativeWrap(0, -1);
-	focusRight = () => this.focusRelativeWrap(0, +1);
+	focusUp = () => this.focusAction(this.coordUp);
+	focusDown = () => this.focusAction(this.coordDown);
+	focusLeft = () => this.focusAction(this.coordLeft);
+	focusRight = () => this.focusAction(this.coordRight);
+	focusNext = () => this.focusAction(this.coordNext);
+	focusPrev = () => this.focusAction(this.coordPrev);
 
-	focusRelativeWrap(dx: number, dy: number) {
+	focusAction(action: (coord: GridCoord) => GridCoord): void {
 		if (this.state.focusCoords == null) { return; }
+
+		// repeatedly apply `action` until non-void cell is found
 		let { row, col } = this.state.focusCoords;
+		let coord = this.coordAction(this.state.focusCoords, action);
+
+		// focus on the cell we found
 		this.setState({
-			focusCoords: {
-				row: mod(row + dx, this.state.numRows),
-				col: mod(col + dy, this.state.numCols)
-			}
+			focusCoords: coord
 		});
-	}
-
-	focusNext() {
-		if (this.state.focusCoords == null) { return; }
-		// compute next position
-		let { row, col } = this.state.focusCoords;
-		this.setState({ focusCoords: this.coordNext(row, col) });
-	}
-
-	focusPrev() {
-		if (this.state.focusCoords == null) { return; }
-		// compute prev position
-		let { row, col } = this.state.focusCoords;
-		this.setState({ focusCoords: this.coordPrev(row, col) });
 	}
 
 	//// ACTIONS /////////////////////////////////////////////////////
@@ -340,7 +479,11 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		for (let k = 0; k < value.length; k++) {
 			board[nextRow][nextCol] = value[k];
 			// get next cell, as if typing
-			let nextCoord = this.coordNext(nextRow, nextCol);
+			let nextCoord = this.coordAction({ row: nextRow, col: nextCol }, this.coordNext);
+
+			// nextCoord may be null if e.g. a large section of the board is disabled,
+			// in which case we exit early and focus on the most recent non-null cell.
+			if (nextCoord == null) { break; }
 			nextRow = nextCoord.row;
 			nextCol = nextCoord.col;
 		}
@@ -432,7 +575,7 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 // <GridCell /> ------------------------------------------------------
 
 interface IGridCellProps {
-	value: string;
+	value: (string | null);
 	focus?: boolean;
 	handleInput: React.ChangeEventHandler<HTMLInputElement>;
 	handleBeforeInput: React.ChangeEventHandler<HTMLInputElement>;
@@ -448,18 +591,21 @@ function GridCell(props: IGridCellProps) {
 		if (props.focus) { inputElt.current?.focus(); }
 	});
 
-	return (
-		<div className="cell">
-			<input
-				type="text"
-				autoComplete="plz-dont-autofill"
-				onInput={props.handleInput}
-				onBeforeInput={props.handleBeforeInput}
-				onKeyDown={props.handleKeyDown}
-				onFocus={props.handleFocus}
-				value={props.value}
-				ref={inputElt}
-			/>
-		</div>
-	);
+	// handle null cell
+	if (props.value == null) {
+		return (<div className="cell void"></div>);
+	}
+
+	return (<div className="cell">
+		<input
+			type="text"
+			autoComplete="plz-dont-autofill"
+			onInput={props.handleInput}
+			onBeforeInput={props.handleBeforeInput}
+			onKeyDown={props.handleKeyDown}
+			onFocus={props.handleFocus}
+			value={props.value}
+			ref={inputElt}
+		/>
+	</div>);
 };
