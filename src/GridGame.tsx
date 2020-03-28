@@ -50,6 +50,17 @@ enum Key {
 	PERIOD = 190
 };
 
+enum HighlightMode {
+	NONE, ROW, COLUMN, ROW_CONTIGUOUS, COLUMN_CONTIGUOUS
+}
+
+interface Highlight {
+	mode: HighlightMode;
+	modeIdx?: number;
+	coords: GridCoord[];
+	focusIdx: number | null;
+}
+
 // init --------------------------------------------------------------
 
 export function init() {
@@ -304,12 +315,10 @@ interface IGridGameState {
 	board: (string | null)[][];
 	disabled: boolean;
 	focusCoords: { row: number, col: number; } | null;
+	highlight: (Highlight | null);
 }
 
-interface GridCoord {
-	row: number,
-	col: number;
-}
+interface GridCoord { row: number, col: number; }
 
 export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 
@@ -327,13 +336,12 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		this.handleInput = this.handleInput.bind(this);
 		this.handleKeyDown = this.handleKeyDown.bind(this);
 		this.handleFocus = this.handleFocus.bind(this);
+		this.handleClick = this.handleClick.bind(this);
 
 		// default to empty board
-		let board = props.board || range(props.numRows).map((k, v) =>
-			range(props.numCols).map((k, v) => "")
+		let board = props.board || range(props.numRows).map((v, k) =>
+			range(props.numCols).map((v, k) => "")
 		);
-
-		console.log(props, board);
 
 		// set state
 		this.state = {
@@ -341,13 +349,40 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 			numCols: props.numCols,
 			board: board,
 			disabled: false,
-			focusCoords: null
+			focusCoords: null,
+			highlight: null
 		};
+	}
+
+	/* ---- Cell Info ---- */
+
+	cellDisabled(row: number, col: number): boolean;
+	cellDisabled(coord: GridCoord): boolean;
+	cellDisabled(first: any, second?: number): boolean {
+		if (second !== undefined) {
+			return (this.state.board[first][second] === null);
+		} else {
+			return (this.state.board[first.row][first.col] === null);
+		}
 	}
 
 	/* ---- Render ---- */
 
 	render() {
+		// determine highlighted cells
+		let highlights: boolean[][] = range(this.state.numRows).map((v, k) =>
+			range(this.state.numCols).map((v, k) => false)
+		);
+
+		if (this.state.highlight?.coords) {
+			for (let { row, col } of this.state.highlight.coords) {
+				if (row < 0 || row > this.state.numRows) { continue; }
+				if (col < 0 || col > this.state.numCols) { continue; }
+				highlights[row][col] = true;
+			}
+		}
+
+		// render grid cells
 		return (<div id="board" tabIndex={0}>
 			{range(this.state.numRows).map((v, row) =>
 				<div className="board-row">
@@ -361,12 +396,65 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 							handleBeforeInput={(evt: React.ChangeEvent<HTMLInputElement>) => this.handleBeforeInput(evt, row, col)}
 							handleKeyDown={(evt) => this.handleKeyDown(evt, row, col)}
 							handleFocus={(evt) => this.handleFocus(evt, row, col)}
+							handleClick={(evt) => this.handleClick(evt, row, col)}
 							focus={shouldFocus}
+							highlight={highlights[row][col]}
 						/>);
 					})}
 				</div>
 			)}
 		</div>);
+	}
+
+	//// ACTIONS /////////////////////////////////////////////////////
+
+	boardDelete(row: number, col: number) {
+		let newBoard = clone2dArray(this.state.board);
+		newBoard[row][col] = "";
+		this.setState({
+			board: newBoard
+		});
+	}
+
+	boardInsert(value: string, row?: number, col?: number, focus: boolean = true) {
+		// default to currently focused cell
+		if (row === undefined || col === undefined) {
+			if (this.state.focusCoords) {
+				if (row === undefined) { row = this.state.focusCoords.row; }
+				if (col === undefined) { col = this.state.focusCoords.col; }
+			} else {
+				return;
+			}
+		}
+
+		// normalize input
+		// TODO: support for input restrictions (A-Z, 0-9, etc.)
+		value = value.toUpperCase();
+
+		// insert into board, as if typing
+		let board = clone2dArray(this.state.board);
+		let [nextRow, nextCol] = [row, col];
+		for (let k = 0; k < value.length; k++) {
+			board[nextRow][nextCol] = value[k];
+			// get next cell, as if typing
+			let nextCoord = this.coordAction({ row: nextRow, col: nextCol }, this.coordNext);
+
+			// nextCoord may be null if e.g. a large section of the board is disabled,
+			// in which case we exit early and focus on the most recent non-null cell.
+			if (nextCoord == null) { break; }
+			nextRow = nextCoord.row;
+			nextCol = nextCoord.col;
+		}
+
+		// optionally set focus
+		if (focus) {
+			this.setState({
+				board: board,
+				focusCoords: { row: nextRow, col: nextCol }
+			});
+		} else {
+			this.setState({ board });
+		}
 	}
 
 	/* ---- Coordinate Computations ---- */
@@ -448,55 +536,101 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		});
 	}
 
-	//// ACTIONS /////////////////////////////////////////////////////
+	/* ---- Highlight ---- */
 
-	boardDelete(row: number, col: number) {
-		let newBoard = clone2dArray(this.state.board);
-		newBoard[row][col] = "";
+	unhighlight() {
+		this.setState({ highlight: null });
+	}
+
+	highightCoords(coords: (GridCoord[] | null), focusIdx: number = 0) {
+		// TODO:  only include valid coords?
+		// unhighlight if no coords provided
+		if (!coords) { this.unhighlight(); return; }
+
 		this.setState({
-			board: newBoard
+			highlight: {
+				mode: HighlightMode.NONE,
+				modeIdx: -1,
+				coords: coords,
+				focusIdx: (focusIdx > 0 && focusIdx < coords.length) ? focusIdx : null
+			}
 		});
 	}
 
-	boardInsert(value: string, row?: number, col?: number, focus: boolean = true) {
-		// default to currently focused cell
-		if (row === undefined || col === undefined) {
-			if (this.state.focusCoords) {
-				if (row === undefined) { row = this.state.focusCoords.row; }
-				if (col === undefined) { col = this.state.focusCoords.col; }
-			} else {
-				return;
+	highlightRowAt(row: number, col: number, contiguous: boolean = false) {
+		// validate arguments
+		let abort = false;
+		abort = abort || (row < 0 || row > this.state.numRows);
+		abort = abort || (contiguous && (col < 0 || col >= this.state.numCols));
+		abort = abort || (contiguous && this.state.board[row][col] == null);
+		if (abort) { this.unhighlight(); return; }
+
+		// highlight cols [a, b) of this row
+		let a = 0;
+		let b = this.state.numCols;
+
+		// expand outwards from (row,col) horizontally
+		// until a disabled cell is encountered
+		if (contiguous) {
+			a = col;
+			b = col + 1;
+			while (a > 0 && !this.cellDisabled(row, a - 1)) { a--; }
+			while (b < this.state.numCols && !this.cellDisabled(row, b)) { b++; }
+		}
+
+		// return highlighted coordinates
+		let coords: GridCoord[] = [];
+		for (let c = a; c < b; c++) {
+			coords.push({ row: row, col: c });
+		}
+
+		// choose focused cell
+		this.setState({
+			highlight: {
+				mode: HighlightMode.ROW,
+				modeIdx: row,
+				focusIdx: Math.max(0, Math.min(coords.length - 1, col - a)),
+				coords: coords
 			}
+		});
+	}
+
+	highlightColAt(row: number, col: number, contiguous: boolean = false) {
+		// validate arguments
+		let abort = false;
+		abort = abort || (col < 0 || col >= this.state.numCols);
+		abort = abort || (contiguous && (row < 0 || row >= this.state.numRows));
+		abort = abort || (contiguous && this.cellDisabled(row, col));
+		if (abort) { this.unhighlight(); return; }
+
+		// highlight rows [a, b) of this column
+		let a = 0;
+		let b = this.state.numRows;
+
+		// expand outwards from (row,col) vertically
+		// until a disabled cell is encountered
+		if (contiguous) {
+			a = row;
+			b = row + 1;
+			while (a > 0 && !this.cellDisabled(a - 1, col)) { a--; }
+			while (b < this.state.numRows && !this.cellDisabled(b, col)) { b++; }
 		}
 
-		// normalize input
-		// TODO: support for input restrictions (A-Z, 0-9, etc.)
-		value = value.toUpperCase();
-
-		// insert into board, as if typing
-		let board = clone2dArray(this.state.board);
-		let [nextRow, nextCol] = [row, col];
-		for (let k = 0; k < value.length; k++) {
-			board[nextRow][nextCol] = value[k];
-			// get next cell, as if typing
-			let nextCoord = this.coordAction({ row: nextRow, col: nextCol }, this.coordNext);
-
-			// nextCoord may be null if e.g. a large section of the board is disabled,
-			// in which case we exit early and focus on the most recent non-null cell.
-			if (nextCoord == null) { break; }
-			nextRow = nextCoord.row;
-			nextCol = nextCoord.col;
+		// return highlighted coordinates
+		let coords = [];
+		for (let r = a; r < b; r++) {
+			coords.push({ row: r, col: col });
 		}
 
-		// optionally set focus
-		if (focus) {
-			this.setState({
-				board: board,
-				focusCoords: { row: nextRow, col: nextCol }
-			});
-		} else {
-			this.setState({ board });
-		}
+		// choose focused cell
+		this.setState({
+			highlight: {
+				mode: HighlightMode.COLUMN,
+				modeIdx: col,
+				focusIdx: Math.max(0, Math.min(coords.length - 1, row - a)),
+				coords: coords
+			}
+		});
 	}
 
 	//// EVENT HANDLERS //////////////////////////////////////////////
@@ -538,6 +672,7 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 	}
 
 	handleFocus(evt: React.FocusEvent, row: number, col: number) {
+		console.log("handleFocus");
 		this.setState({ focusCoords: { row, col } });
 	}
 
@@ -570,6 +705,31 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 		if (evt.keyCode == Key.UP) { this.focusUp(); }
 		if (evt.keyCode == Key.DOWN) { this.focusDown(); }
 	}
+
+	handleClick(evt: React.MouseEvent, row: number, col: number) {
+		// ignore click when disabled
+		if (this.state.disabled) { return; }
+		console.log(`boggle :: click (r=${row}, c=${col})`);
+
+		let highlight = this.state.highlight;
+		let mode = highlight?.mode;
+
+		// clicking highlighted col?
+		if (highlight !== null) {
+			if (highlight.mode == HighlightMode.ROW && row == highlight?.modeIdx) {
+				mode = HighlightMode.COLUMN;
+			} else if (highlight.mode == HighlightMode.COLUMN && col == highlight.modeIdx) {
+				mode = HighlightMode.ROW;
+			}
+		}
+
+		// highlight rows by default
+		if (mode == HighlightMode.COLUMN) {
+			this.highlightColAt(row, col, true);
+		} else {
+			this.highlightRowAt(row, col, true);
+		}
+	}
 }
 
 // <GridCell /> ------------------------------------------------------
@@ -577,10 +737,12 @@ export class GridGame extends React.Component<IGridGameProps, IGridGameState> {
 interface IGridCellProps {
 	value: (string | null);
 	focus?: boolean;
+	highlight?: boolean;
 	handleInput: React.ChangeEventHandler<HTMLInputElement>;
 	handleBeforeInput: React.ChangeEventHandler<HTMLInputElement>;
 	handleKeyDown: React.KeyboardEventHandler<HTMLInputElement>;
 	handleFocus: React.FocusEventHandler<HTMLInputElement>;
+	handleClick: React.MouseEventHandler<HTMLInputElement>;
 }
 
 function GridCell(props: IGridCellProps) {
@@ -589,14 +751,16 @@ function GridCell(props: IGridCellProps) {
 	// focus <input> whenever `focus` prop present
 	React.useEffect(() => {
 		if (props.focus) { inputElt.current?.focus(); }
-	});
+	}, [props.focus]);
 
 	// handle null cell
 	if (props.value == null) {
 		return (<div className="cell void"></div>);
 	}
 
-	return (<div className="cell">
+	let className = "cell" + (props.highlight ? " highlight" : "");
+
+	return (<div className={className}>
 		<input
 			type="text"
 			autoComplete="plz-dont-autofill"
@@ -604,6 +768,7 @@ function GridCell(props: IGridCellProps) {
 			onBeforeInput={props.handleBeforeInput}
 			onKeyDown={props.handleKeyDown}
 			onFocus={props.handleFocus}
+			onClick={props.handleClick}
 			value={props.value}
 			ref={inputElt}
 		/>
